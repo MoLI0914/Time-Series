@@ -1,0 +1,180 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+Partie 1 : Les Données
+============================================
+
+Question 1
+--------------------------------------------
+
+Les données sont "Fabrication de glaces et sorbets" de Janvier 1990 jusau'à Mars 2020, qui peut être téléchargé sur ce lien : https://www.insee.fr/fr/statistiques/serie/010537265. 
+
+Pour commencer, nous avons fait une transformation logarithmique de nos données, qui rendre la série plus stationnaire, donc plus favorable pour les tests de racine unitaire. Nos données avant et après la transformation sont présentées dans les graphs suivantes :
+
+Fabrication de glaces et sorbets
+
+```{r}
+setwd("D:/2019-2020 ENSAE Paris/2019-2020 2eme semestre/STL/Projet final")
+
+library('tseries')
+library('lmtest')
+library('FitAR')
+library('forecast')
+library('zoo')
+
+data <- read.csv("valeurs_mensuelles.csv", sep = ";")
+xm <- rev(zoo(data[[2]])[-c(1,2)])
+dates <- as.yearmon(seq(from = 1990,to = 2020 + 2/12, by = 1/12))
+xm <- zoo(xm, order.by = dates)
+log.xm <- log(xm)
+n <- length(xm)
+
+plot(cbind(xm, log.xm), main = '')
+```
+
+La série semble très saisonnaire. On peut vérifier cette conclusion en regardant 
+```{r}
+acf(log.xm)
+pacf(log.xm)
+```
+
+```{r}
+plot(decompose(ts(log.xm, frequency = 12, start = c(1990,1))))
+```
+
+
+Supprimer la saisonnalité
+```{r}
+desaison.xm <- diff(log.xm, 12)
+y <- desaison.xm - mean(desaison.xm)
+plot(y)
+```
+
+```{r}
+y.ts <- ts(y, frequency = 12, start = c(1990,1))
+de <- decompose(y.ts)
+plot(de$seasonal)
+```
+
+
+
+```{r}
+pp.test(y)
+```
+```{r}
+adfTest(y, type = "nc")
+```
+
+```{r}
+plot(cbind(xm, y), main = '')
+```
+
+
+Stationnaire, donc d = 0.
+```{r}
+par(mfrow = c(1, 2))
+acf(y, 60)
+pacf(y, 120)
+```
+
+```{r}
+pmax <- 30
+qmax <- 22
+
+modelchoice <- function(p, q, data = y, k = 24) {
+  estim <- try(arima(data, c(p,0,q), optim.control=list(maxit=20000)))
+  if (class(estim)=="try-error") return(c("p"=p,"q"=q,"arsignif"=NA,"masignif"=NA,"resnocorr"=NA, "ok"=NA))
+  arsignif <- if (p==0) NA else signif(estim)[3,p]<=0.05
+  masignif <- if (q==0) NA else signif(estim)[3,p+q]<=0.05
+  resnocorr <- sum(Qtests(estim$residuals,24,length(estim$coef)-1)[,2]<=0.05,na.rm=T)==0 
+  checks <- c(arsignif,masignif,resnocorr)
+  ok <- as.numeric(sum(checks,na.rm=T)==(3-sum(is.na(checks))))
+  
+  return(c("p"=p,"q"=q,"arsignif"=arsignif,"masignif"=masignif,"resnocorr"=resnocorr,"ok"=ok)) }
+
+armamodelchoice <- function(pmax,qmax){ 
+  pqs <- expand.grid(0:pmax,0:qmax)
+  t(apply(matrix(1:dim(pqs)[1]),1,function(row) { p <- pqs[row,1]; q <- pqs[row,2]; cat(paste0("Computing ARMA(",p,",",q,") \n")); modelchoice(p,q) })) }
+```
+
+
+```{r}
+pmax <- 24
+qmax <- 12
+armamodels <- armamodelchoice(pmax,qmax)
+```
+
+
+```{r}
+selec <- armamodels[armamodels[,"ok"]==1&!is.na(armamodels[,"ok"]),]#mod`eles bien ajust´es et valides 
+```
+
+```{r}
+selec <- armamodels[armamodels[,"ok"]==1&!is.na(armamodels[,"ok"]),]#mod`eles bien ajust´es et valides 
+selec
+```
+
+
+```{r}
+pqs <- apply(selec,1,function(row) list("p"=as.numeric(row[1]),"q"=as.numeric(row[2]))) #cr´ee #une liste des ordres p et q des mod`eles candidats 
+names(pqs) <- paste0("arma(",selec[,1],",",selec[,2],")") #renomme les ´ el´ements de la liste 
+models <- lapply(pqs, function(pq) arima(y, c(pq[["p"]],0,pq[["q"]]))) #cr´ee une liste des mod`eles 
+aicbic <- vapply(models, FUN.VALUE=numeric(2), function(m) c("AIC"=AIC(m),"BIC"=BIC(m)))
+```
+
+ARMA(24, 2) minimise BIC et ARMA(19, 11) minimise AIC. 
+
+```{r}
+predict(models$`arma(24,2)`, 2)
+```
+
+```{r}
+predict(models$`arma(19,11)`, 2)
+```
+
+
+```{r}
+SerieForcast2 <- forecast(models$`arma(24,2)`, h=2, level=c(95))
+plot(SerieForcast2, main = "ARIMA(24,0,2)")
+```
+
+```{r}
+SerieForcast2 <- forecast(models$`arma(19,11)`, h = 2, level=c(95))
+plot(SerieForcast2, main = "ARIMA(19,0,11)")
+```
+
+
+```{r}
+library('car')
+   Variance_residus = var(residuals(models$`arma(24,2)`)) 
+   Matrix_cov = matrix(,nrow = 2,ncol = 2) 
+   Matrix_cov[1,1] <- Variance_residus
+   Matrix_cov[2,1] <- Variance_residus * (1 + models$`arma(24,2)`$coef[1] + models$`arma(24,2)`$coef[2])
+   Matrix_cov[1,2] <- Variance_residus*(1 + models$`arma(24,2)`$coef[1] + models$`arma(24,2)`$coef[2])
+   Matrix_cov[2,2] <- Variance_residus*(1 + (1 + models$`arma(24,2)`$coef[1] + models$`arma(24,2)`$coef[2])^2)
+   
+   alpha <- 0.05 
+   Quantile <- qchisq( 1 - alpha , df = 2) 
+   
+
+   X1 <- -0.067123960
+   X2 <- -0.004853908
+   
+   Center = c(X1,X2)
+   plot(Center[1], Center[2])
+   x <- ellipse(center = Center,shape = Matrix_cov, radius = sqrt(Quantile))
+   plot(x, type = 'l',col = "red" , xlab = "X_(T+1)", ylab = "X_(T+2)")
+   points(X1, X2, col = "green")
+```
+
+
+
+
+
+
+
+
+
